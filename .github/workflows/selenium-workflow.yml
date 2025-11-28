@@ -35,5 +35,5 @@ jobs:
     - name: Run Selenium Script
       env: # 이부분 반드시 필요
         LOTTO_ID: ${{ secrets.LOTTO_ID }}
-        LOTTO_PASSWORD: ${{ secrets.LOTTO_PASSWORD }
+        LOTTO_PASSWORD: ${{ secrets.LOTTO_PASSWORD }}
       run: python main.py
