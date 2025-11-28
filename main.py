@@ -7,6 +7,8 @@ from selenium.webdriver.support import expected_conditions as EC
 import time
 from selenium.webdriver.chrome.options import Options
 
+import os
+
 # 아이디와 비밀번호를 환경 변수에서 가져옵니다.
 id = os.environ.get("LOTTO_ID")          # <--- 이 부분 수정
 password = os.environ.get("LOTTO_PASSWORD")  # <--- 이 부분 수정
