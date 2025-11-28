@@ -33,9 +33,16 @@ jobs:
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
         sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
         
-    - name: Run Selenium Script
-      # ⭐ Secrets에서 환경 변수를 가져옵니다.
-      env: 
-        LOTTO_ID: ${{ secrets.LOTTO_ID }}
-        LOTTO_PASSWORD: ${{ secrets.LOTTO_PASSWORD }}
-      run: python main.py
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install selenium
+        
+        # ⭐ 이 부분을 수정합니다: apt-get update를 먼저 실행하고,
+        # libgconf-2-4 대신 필요한 최신 패키지를 설치합니다.
+        sudo apt-get update
+        sudo apt-get install -y libglib2.0-0 libnss3 libfontconfig1
+        # libgconf-2-4는 보통 최신 Ubuntu 환경에서 설치되지 않으므로 제거합니다.
+        # 필요하다면 다른 의존성 패키지(예: libxss1)를 추가할 수 있습니다.
+
+
