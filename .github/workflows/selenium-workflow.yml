@@ -3,7 +3,7 @@ name: Run Selenium Script
 on:
   workflow_dispatch: # 수동으로 실행
   schedule:
-    - cron: '0 9 * * 1'  # At 09:00 on Monday
+    - cron: '50 23 * * 1'  # 매주 월요일 KST 08:50 (UTC 23:50)에 실행됩
 
 jobs:
   build:
