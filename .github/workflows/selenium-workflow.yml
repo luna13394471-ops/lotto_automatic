@@ -3,7 +3,9 @@ name: Lotto Auto Purchase
 on:
   workflow_dispatch: # 수동으로 실행
   schedule:
-    - cron: '50 22 * * 0' # 매주 월요일 KST 07:50 (UTC 22:50)에 실행됨
+    # 매주 월요일 KST 07:50 (UTC 22:50)에 실행됨
+    # 0 (일요일) 22시 50분은 한국 시간 월요일 07시 50분입니다. (UTC +9)
+    - cron: '50 22 * * 0' 
     
 jobs:
   build:
@@ -11,30 +13,36 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      # 최신 v4 버전 사용
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v3
+      # 최신 v5 버전 사용
+      uses: actions/setup-python@v5
       with:
         python-version: '3.x'
 
-    - name: Install dependencies
+    - name: Install dependencies (Python & System)
       run: |
         python -m pip install --upgrade pip
-        pip install selenium
+        # 🚨 중요 수정: requests 라이브러리 추가
+        pip install selenium requests
         
-        # ⭐ 이 블록에서 libgconf-2-4를 완전히 제거했습니다.
-        # Chrome/Selenium 실행에 필요한 최소한의 패키지만 설치합니다.
+        # Chrome/Selenium 실행에 필요한 최소한의 시스템 패키지 설치
         sudo apt-get update
         sudo apt-get install -y libglib2.0-0 libnss3 libfontconfig1 libxss1
         
     - name: Install Google Chrome Stable
       run: |
+        # Google Chrome 다운로드 및 설치
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
         sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
         
     - name: Run Selenium Script
+      # 🚨 중요 수정: 텔레그램 환경 변수 추가
       env: 
         LOTTO_ID: ${{ secrets.LOTTO_ID }}
         LOTTO_PASSWORD: ${{ secrets.LOTTO_PASSWORD }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: python main.py
