@@ -18,7 +18,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 number = 1 
 
 def send_telegram_message(message: str, is_success: bool):
-    """텔레그램 알림 전송"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     icon = "✅ 성공" if is_success else "❌ 실패"
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -32,39 +31,35 @@ chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 chrome_options.add_argument("--window-size=1920,1080")
-
-# 봇 탐지 및 모바일 감지 무력화
 chrome_options.add_argument("--disable-blink-features=AutomationControlled")
 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
 chrome_options.add_experimental_option('useAutomationExtension', False)
 
-# PC 버전 유저 에이전트 고정
-user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 chrome_options.add_argument(f"user-agent={user_agent}")
 
 driver = webdriver.Chrome(options=chrome_options)
 
-# [중요] CDP 명령으로 플랫폼 정보를 'Win32'로 강제 설정하여 모바일 리다이렉트 차단
+# CDP 명령으로 플랫폼 정보 고정 (모바일 리다이렉트 방지)
 driver.execute_cdp_cmd("Network.setUserAgentOverride", {
     "userAgent": user_agent,
     "platform": "Win32"
 })
 
-# navigator.webdriver 속성 제거
 driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
     "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
 })
 
-wait = WebDriverWait(driver, 25)
+wait = WebDriverWait(driver, 30) # 대기 시간을 30초로 충분히 확보
 
 try:
     if not id or not password:
-        raise ValueError("ID/PW 환경 변수가 설정되지 않았습니다.")
+        raise ValueError("ID/PW 환경 변수 설정 확인")
 
-    # 1. 로그인 단계 (이미 성공한 경로 유지)
+    # 1. 로그인 단계
     print(f"로그인 시도 중... (ID: {id})")
     driver.get("https://dhlottery.co.kr/login")
-    time.sleep(random.uniform(2, 4))
+    time.sleep(random.uniform(2, 3))
 
     wait.until(EC.visibility_of_element_located((By.ID, "inpUserId"))).send_keys(id)
     driver.find_element(By.ID, "inpUserPswdEncn").send_keys(password)
@@ -72,55 +67,57 @@ try:
     login_btn = driver.find_element(By.ID, "btnLogin")
     driver.execute_script("arguments[0].click();", login_btn)
     
-    # 로그인 후 세션이 구매 서버로 전파될 시간을 충분히 줍니다.
-    time.sleep(6) 
+    time.sleep(5) 
     print("로그인 완료.")
 
-    # 2. 구매 페이지 접속 전 PC 메인 경유 (Referer 생성)
-    print("PC 메인 페이지 경유 중...")
-    driver.get("https://dhlottery.co.kr/common.do?method=main")
-    time.sleep(2)
-
-    # 3. 로또 구매 페이지 접속 (PC 버전 전용)
+    # 2. 구매 페이지 접속
     print("구매 페이지 접속 시도...")
+    # 사용자가 준 최신 URL로 접속
     driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
-    time.sleep(5)
+    time.sleep(7) # 페이지 로딩 및 세션 전파 대기
 
-    # [핵심] 모바일로 튕겼는지 다시 한번 확인하고 강제 복구
-    if "m.dhlottery" in driver.current_url:
-        print("모바일 페이지 재감지. 강제 PC 버전 주소 호출...")
-        driver.execute_script("location.href='https://ol.dhlottery.co.kr/olotto/game/game645.do'")
-        time.sleep(5)
-
-    # 4. Iframe 전환 및 구매 로직
-    # 구매 화면은 반드시 iframe 안에 있으므로 전환이 필수입니다.
+    # 3. Iframe 유연한 전환 로직 (핵심 수정)
+    print("Iframe 탐색 및 전환 시도...")
     try:
+        # 방법 1: 기존 ID(ifrm_answer)로 시도
         wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "ifrm_answer")))
-        print("Iframe 진입 성공.")
+        print("Iframe(ID: ifrm_answer) 진입 성공.")
     except:
-        # Iframe이 없다면 화면 상태를 캡처하여 분석합니다.
-        driver.save_screenshot("purchase_screen_debug.png")
-        raise Exception(f"구매 Iframe을 찾을 수 없습니다. (URL: {driver.current_url})")
+        print("ID로 찾기 실패. 페이지 내 첫 번째 Iframe으로 자동 전환 시도...")
+        try:
+            # 방법 2: ID에 상관없이 첫 번째 iframe으로 전환
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+            if len(iframes) > 0:
+                driver.switch_to.frame(iframes[0])
+                print("첫 번째 Iframe으로 전환 완료.")
+            else:
+                raise Exception("페이지 내에 Iframe이 전혀 존재하지 않습니다.")
+        except Exception as e:
+            driver.save_screenshot("no_iframe_debug.png")
+            raise Exception(f"Iframe 전환에 최종 실패했습니다. 현재 URL: {driver.current_url}")
 
-    # 5. 자동 번호 발행 및 수량 선택
-    # '자동번호발행' 버튼 클릭
+    # 4. 자동 번호 발행 및 구매 (제공해주신 HTML 구조 적용)
+    print("구매 로직 시작...")
+    # '자동번호발급' 클릭
     auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
     driver.execute_script("arguments[0].click();", auto_btn)
     
-    # 수량 선택 (기본 1개)
-    amount_sel = Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply"))))
-    amount_sel.select_by_value(str(number))
+    # 수량 선택 (amoundApply)
+    amount_sel_el = wait.until(EC.presence_of_element_located((By.ID, "amoundApply")))
+    Select(amount_sel_el).select_by_value(str(number))
     
-    # 선택 완료(확인) 버튼
-    driver.find_element(By.ID, "btnSelectNum").click()
-    print(f"{number}게임 선택 완료.")
+    # '확인' 버튼 클릭 (btnSelectNum)
+    confirm_num_btn = driver.find_element(By.ID, "btnSelectNum")
+    driver.execute_script("arguments[0].click();", confirm_num_btn)
+    print(f"{number}게임 자동 선택 완료.")
     time.sleep(1)
     
-    # 6. 최종 구매 진행
-    driver.find_element(By.ID, "btnBuy").click()
-    time.sleep(1)
-
-    # 최종 확인 팝업의 '확인' 버튼 (XPath 활용)
+    # '구매하기' 버튼 클릭 (btnBuy)
+    buy_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnBuy")))
+    driver.execute_script("arguments[0].click();", buy_btn)
+    
+    # 5. 최종 확인 팝업 (closepopupLayerConfirm(true) 호출 버튼)
+    print("최종 확인 팝업 처리 중...")
     final_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
     final_confirm_btn = wait.until(EC.element_to_be_clickable((By.XPATH, final_xpath)))
     driver.execute_script("arguments[0].click();", final_confirm_btn)
@@ -128,11 +125,12 @@ try:
     success_msg = f"로또 자동 구매 성공! ({number}게임)"
     print(success_msg)
     send_telegram_message(success_msg, True)
+    time.sleep(2)
 
 except Exception as e:
-    error_msg = f"에러 발생: {str(e)}\n최종 URL: {driver.current_url}"
+    error_msg = f"에러 발생: {str(e)}\n현재 URL: {driver.current_url}"
     print(error_msg)
-    driver.save_screenshot("final_error_debug.png")
+    driver.save_screenshot("final_step_error.png")
     send_telegram_message(error_msg, False)
 
 finally:
