@@ -1,145 +1,122 @@
 import os
 import time
-import requests # ⭐️ 텔레그램 알림을 위한 requests 라이브러리 추가
+import requests
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
-# ⭐ 환경 변수(GitHub Secrets)에서 ID와 Password를 가져옵니다.
+# ⭐ 환경 변수(GitHub Secrets) 설정
 id = os.environ.get("LOTTO_ID")
 password = os.environ.get("LOTTO_PASSWORD")
-# ⭐️ 텔레그램 알림을 위한 환경 변수를 가져옵니다.
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 구매횟수 (5개까지 가능)
+# 구매횟수 (최대 5개)
 number = 1 
 
-# ⭐️ 텔레그램 메시지를 전송하는 함수
 def send_telegram_message(message: str, is_success: bool):
-    """지정된 봇 토큰과 채팅 ID로 텔레그램 메시지를 전송합니다."""
+    """텔레그램 알림 전송 함수"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("경고: 텔레그램 환경 변수(TOKEN/CHAT_ID)가 설정되지 않아 알림을 보낼 수 없습니다.")
+        print("경고: 텔레그램 설정이 없습니다.")
         return
 
-    # 메시지 포맷팅
     icon = "✅ 성공" if is_success else "❌ 실패"
     full_message = f"{icon} 로또 자동 구매 알림\n\n{message}"
-    
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': full_message,
-        'parse_mode': 'Markdown' # Markdown 포맷 사용 가능 (선택 사항)
-    }
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': full_message, 'parse_mode': 'Markdown'}
 
     try:
         response = requests.post(url, data=payload)
-        response.raise_for_status() # HTTP 오류가 발생하면 예외 발생
+        response.raise_for_status()
         print("텔레그램 알림 전송 완료.")
-    except requests.exceptions.RequestException as e:
-        print(f"텔레그램 알림 전송 중 오류 발생: {e}")
+    except Exception as e:
+        print(f"텔레그램 전송 실패: {e}")
 
 # Chrome 옵션 설정
 chrome_options = Options()
-# GitHub Actions 환경에서 필수: 헤드리스 모드 및 리소스 최적화
-chrome_options.add_argument("--headless")
+chrome_options.add_argument("--headless") # GitHub Actions 필수
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
-chrome_options.add_argument("--window-size=1920,1080") # 화면 크기 지정 (headless에서 안정성↑)
-chrome_options.add_argument("--disable-gpu")
-chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+chrome_options.add_argument("--window-size=1920,1080")
+chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-# WebDriver 객체 생성 (Selenium Manager가 드라이버를 자동 관리)
-# GitHub Actions 환경에서는 경로 지정 없이 Options만 전달합니다.
 driver = webdriver.Chrome(options=chrome_options)
-
-log_message = f"로그인 시도 ID: {id}\n구매 횟수: {number} 게임"
-print(log_message)
-
+wait = WebDriverWait(driver, 15)
 
 try:
-    # 1. 웹 페이지 접속 및 로그인
-    driver.get("https://dhlottery.co.kr/user.do?method=login&returnUrl=")
-
-    # 아이디와 비밀번호 입력 필드가 나타날 때까지 대기
-    username_field = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "userId")))
-    password_field = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "#article > div:nth-child(2) > div > form > div > div.inner > fieldset > div.form > input[type=password]:nth-child(2)")))
+    print(f"로그인 시도 ID: {id}")
     
-    # 🚨 NoneType 체크: 환경 변수가 제대로 전달되지 않은 경우 에러 방지
+    # 1. 로그인 페이지 접속
+    driver.get("https://dhlottery.co.kr/login")
+    
     if not id or not password:
-        raise ValueError("LOTTO_ID 또는 LOTTO_PASSWORD가 환경 변수로 설정되지 않았습니다.")
+        raise ValueError("ID/PW 환경 변수가 설정되지 않았습니다.")
 
-    username_field.send_keys(id)
-    password_field.send_keys(password)
+    # 아이디/비밀번호 입력 (셀렉터 최신화)
+    wait.until(EC.presence_of_element_located((By.ID, "userId"))).send_keys(id)
+    driver.find_element(By.NAME, "password").send_keys(password)
     
     # 로그인 버튼 클릭
-    login_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, '//*[@id="article"]/div[2]/div/form/div/div[1]/fieldset/div[1]/a')))
-    login_button.click()
+    login_btn = driver.find_element(By.CSS_SELECTOR, "a.btn_common.l_gradient")
+    driver.execute_script("arguments[0].click();", login_btn)
+    
+    time.sleep(2)
+    print("로그인 프로세스 완료.")
 
-    time.sleep(3) # 로그인 후 페이지 전환 대기
-    print("로그인 완료.")
+    # 2. 로또 구매 페이지 이동
+    # 사용자가 제공한 최신 URL 사용
+    driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
+    print("구매 페이지 접속 중...")
 
-    # 2. 로또 구매 페이지 접속
-    driver.get('https://ol.dhlottery.co.kr/olotto/game/game645.do')
-    time.sleep(3)
-    
-    # 간혹 뜨는 팝업창 닫기 (자바스크립트 실행)
-    driver.execute_script('javascript:closepopupLayerAlert();')
-    
-    # '자동번호 발행' 버튼 클릭 (ID: num2)
-    auto_generate_button = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "num2")))
-    auto_generate_button.click()
-    
-    print("자동 번호 발행 선택 완료.")
+    # 3. Iframe 전환 (매우 중요)
+    # 동행복권 구매 화면은 보통 'ifrm_answer' 등의 ID를 가진 iframe 안에 있습니다.
+    try:
+        wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "ifrm_answer")))
+    except TimeoutException:
+        print("Iframe을 찾을 수 없습니다. 메인 컨텐츠에서 계속합니다.")
 
-    # 3. 구매 횟수 선택
-    # <select> 요소가 나타날 때까지 대기 (ID: amoundApply)
-    select_element = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "amoundApply")))
-    select = Select(select_element)
+    # 4. 자동 번호 선택 및 구매 로직
+    # '자동번호발행' 버튼 클릭
+    auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
+    auto_btn.click()
     
-    # number 변수에 설정된 횟수 옵션을 선택 (문자열로 변환 필요)
-    select.select_by_value(str(number))
+    # 수량 선택 (Select Box)
+    amount_select = Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply"))))
+    amount_select.select_by_value(str(number))
+    
+    # '확인' 버튼 클릭
+    driver.find_element(By.ID, "btnSelectNum").click()
+    print(f"{number}게임 자동 선택 완료.")
 
-    # '확인' (선택번호 적용) 버튼 클릭 (ID: btnSelectNum)
-    apply_button = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "btnSelectNum")))
-    apply_button.click()
-    
-    print(f"구매 횟수 {number}개 적용 완료.")
-    time.sleep(1)
+    # 5. 구매하기 버튼 클릭
+    buy_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnBuy")))
+    buy_btn.click()
 
-    # 4. 구매 및 최종 확인
-    # '구매하기' 버튼 클릭 (ID: btnBuy)
-    buy_button = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "btnBuy")))
-    buy_button.click()
-    
-    # 최종 구매 확인 팝업의 '확인' 버튼 클릭
-    final_confirm_button = WebDriverWait(driver, 10).until((EC.presence_of_element_located((By.CSS_SELECTOR, "#popupLayerConfirm > div > div.btns > input:nth-child(1)"))))
-    final_confirm_button.click()
-    
-    success_message = f"로또 구매 성공!\n구매 횟수: {number} 게임"
-    print(success_message)
-    # ⭐️ 성공 알림 전송
-    send_telegram_message(success_message, is_success=True)
-    time.sleep(5)
-    
-except ValueError as e:
-    error_msg = f"구성 오류 발생: {e}"
-    print(error_msg)
-    # ⭐️ 실패 알림 전송
-    send_telegram_message(error_msg, is_success=False)
+    # 6. 최종 확인 팝업 (Alert 또는 Layer)
+    # 브라우저 기본 Alert일 경우와 레이어 팝업일 경우를 모두 대비
+    try:
+        # 10년차의 팁: 레이어 팝업 내 확인 버튼 처리
+        confirm_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#popupLayerConfirm input.btn_common_mid.blue")))
+        confirm_btn.click()
+    except:
+        # 브라우저 Alert인 경우 처리
+        alert = driver.switch_to.alert
+        alert.accept()
+
+    success_msg = f"로또 자동 구매 성공! (수량: {number})"
+    print(success_msg)
+    send_telegram_message(success_msg, True)
+
 except Exception as e:
-    error_msg = f"스크립트 실행 중 오류 발생: {e}"
+    error_msg = f"에러 발생: {str(e)}"
     print(error_msg)
-    # 오류 발생 시 현재 페이지 스크린샷 저장 (디버깅용)
-    driver.save_screenshot("error_screenshot.png")
-    # ⭐️ 실패 알림 전송
-    send_telegram_message(error_msg, is_success=False)
-    
+    driver.save_screenshot("error_debug.png") # 디버깅용 스크린샷
+    send_telegram_message(error_msg, False)
+
 finally:
-    # 웹드라이버 종료
     driver.quit()
+    print("브라우저 종료.")
