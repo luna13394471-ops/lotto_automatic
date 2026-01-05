@@ -8,33 +8,36 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
 
-# ⭐ 환경 변수 설정
+# ⭐ 환경 변수 설정 (GitHub Secrets 등에서 가져옴)
 id = os.environ.get("LOTTO_ID")
 password = os.environ.get("LOTTO_PASSWORD")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# 구매횟수 (최대 5개)
+# 구매 게임 수 (1~5)
 number = 1 
 
 def send_telegram_message(message: str, is_success: bool):
-    """텔레그램 알림 전송"""
+    """지정된 텔레그램 봇으로 알림 전송"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("경고: 텔레그램 설정 누락")
+        print("경고: 텔레그램 환경 변수가 설정되지 않았습니다.")
         return
+
     icon = "✅ 성공" if is_success else "❌ 실패"
     full_message = f"{icon} 로또 자동 구매 알림\n\n{message}"
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': full_message, 'parse_mode': 'Markdown'}
+
     try:
-        requests.post(url, data=payload).raise_for_status()
+        response = requests.post(url, data=payload)
+        response.raise_for_status()
         print("텔레그램 알림 전송 완료.")
     except Exception as e:
-        print(f"텔레그램 전송 실패: {e}")
+        print(f"텔레그램 알림 전송 실패: {e}")
 
-# Chrome 옵션 설정
+# Chrome 브라우저 옵션 설정
 chrome_options = Options()
-chrome_options.add_argument("--headless") 
+chrome_options.add_argument("--headless") # 헤드리스 모드 (GitHub Actions 필수)
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 chrome_options.add_argument("--window-size=1920,1080")
@@ -45,72 +48,74 @@ wait = WebDriverWait(driver, 15)
 
 try:
     if not id or not password:
-        raise ValueError("ID/PW 환경 변수가 설정되지 않았습니다.")
+        raise ValueError("LOTTO_ID 또는 LOTTO_PASSWORD 환경 변수가 설정되지 않았습니다.")
 
     # 1. 로그인 페이지 접속
     driver.get("https://dhlottery.co.kr/login")
-    print(f"로그인 페이지 접속 완료 (ID: {id})")
+    print(f"로그인 페이지 접속 (ID: {id})")
 
-    # 2. 개편된 HTML 기준 아이디/비번 입력
-    # visibility_of_element_located를 사용하여 상호작용 가능할 때까지 대기
-    user_id_field = wait.until(EC.visibility_of_element_located((By.ID, "inpUserId")))
-    password_field = wait.until(EC.visibility_of_element_located((By.ID, "inpUserPswdEncn")))
+    # 아이디/비밀번호 입력 (개편된 ID 적용)
+    wait.until(EC.visibility_of_element_located((By.ID, "inpUserId"))).send_keys(id)
+    driver.find_element(By.ID, "inpUserPswdEncn").send_keys(password)
     
-    user_id_field.clear()
-    user_id_field.send_keys(id)
-    password_field.clear()
-    password_field.send_keys(password)
-    
-    # 3. 로그인 버튼 클릭
-    login_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnLogin")))
+    # 로그인 버튼 클릭
+    login_btn = driver.find_element(By.ID, "btnLogin")
     driver.execute_script("arguments[0].click();", login_btn)
     
     time.sleep(3)
-    print("로그인 시도 완료.")
+    print("로그인 완료.")
 
-    # 4. 로또 구매 페이지 이동
+    # 2. 로또 구매 페이지 접속
     driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
     print("구매 페이지 접속 중...")
     time.sleep(3)
 
-    # 5. Iframe 전환 (동행복권 구매창은 iframe 구조임)
+    # 3. Iframe 전환 (동행복권 구매 창은 iframe 내부에 위치함)
     try:
         wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "ifrm_answer")))
-        print("Iframe 내 컨텐츠 접근 성공.")
-    except Exception as e:
-        print("Iframe 전환 건너뜀 (이미 메인이거나 구조가 다름)")
+        print("구매 Iframe 진입 성공.")
+    except:
+        print("Iframe 전환 실패 또는 필요 없음. 계속 진행합니다.")
 
-    # 6. 자동 번호 선택 및 수량 설정
-    # '자동번호발행' 버튼
+    # 4. 자동번호발급 클릭
     auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
     driver.execute_script("arguments[0].click();", auto_btn)
-    
-    # 수량 선택
-    amount_select = Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply"))))
-    amount_select.select_by_value(str(number))
-    
-    # '확인' 버튼
-    driver.find_element(By.ID, "btnSelectNum").click()
-    print(f"{number}게임 자동 선택 완료.")
+    print("자동번호발급 선택.")
 
-    # 7. 구매하기 및 최종 승인
+    # 5. 수량 선택 (Select Box)
+    select_el = wait.until(EC.presence_of_element_located((By.ID, "amoundApply")))
+    select = Select(select_el)
+    select.select_by_value(str(number))
+    
+    # 6. 확인 버튼 (선택번호 적용)
+    confirm_num_btn = driver.find_element(By.ID, "btnSelectNum")
+    driver.execute_script("arguments[0].click();", confirm_num_btn)
+    print(f"구매 수량 {number}개 적용.")
+
+    # 7. 구매하기 버튼 클릭
     buy_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnBuy")))
     driver.execute_script("arguments[0].click();", buy_btn)
+    print("구매하기 버튼 클릭.")
 
-    # 최종 확인 팝업 (CSS 셀렉터 보강)
-    confirm_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#popupLayerConfirm input.btn_common_mid.blue, #popupLayerConfirm .btns input:nth-child(1)")))
-    driver.execute_script("arguments[0].click();", confirm_btn)
+    # 8. 최종 구매 확인 팝업 버튼 클릭
+    # ID가 없으므로 XPath를 통해 '확인' 글자와 onclick 함수명을 가진 요소를 찾음
+    final_confirm_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
+    final_confirm_btn = wait.until(EC.element_to_be_clickable((By.XPATH, final_confirm_xpath)))
+    driver.execute_script("arguments[0].click();", final_confirm_btn)
 
-    success_msg = f"로또 자동 구매 성공! ({number}게임)"
+    # 최종 결과 출력
+    success_msg = f"로또 자동 구매 성공!\n구매 게임 수: {number}개"
     print(success_msg)
     send_telegram_message(success_msg, True)
+    time.sleep(2)
 
 except Exception as e:
     error_msg = f"스크립트 실행 중 오류 발생: {e}"
     print(error_msg)
-    driver.save_screenshot("error_screenshot.png")
+    # 디버깅을 위한 스크린샷 저장
+    driver.save_screenshot("lotto_error.png")
     send_telegram_message(error_msg, False)
 
 finally:
     driver.quit()
-    print("브라우저를 종료합니다.")
+    print("브라우저 종료.")
