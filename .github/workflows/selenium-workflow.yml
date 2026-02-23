@@ -28,9 +28,13 @@ jobs:
         # 🚨 중요 수정: requests 라이브러리 추가
         pip install selenium requests
         
-        # Chrome/Selenium 실행에 필요한 최소한의 시스템 패키지 설치
+        # Chrome/Selenium 실행 및 한글 폰트 지원을 위한 패키지 설치
         sudo apt-get update
-        sudo apt-get install -y libglib2.0-0 libnss3 libfontconfig1 libxss1
+        sudo apt-get install -y libglib2.0-0 libnss3 libfontconfig1 libxss1 \
+                               fonts-nanum fonts-nanum-coding fonts-nanum-eco # ✅ 한글 폰트 추가
+        
+        # 시스템 폰트 캐시 갱신
+        sudo fc-cache -fv
         
     - name: Install Google Chrome Stable
       run: |
