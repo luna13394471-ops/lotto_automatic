@@ -8,96 +8,114 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
-# ⭐ 환경 변수
-ID = os.environ.get("LOTTO_ID")
-PASSWORD = os.environ.get("LOTTO_PASSWORD")
+# ⭐ 환경 변수 설정
+id = os.environ.get("LOTTO_ID")
+password = os.environ.get("LOTTO_PASSWORD")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-NUMBER = 1 
+
+number = 1 
 
 def send_telegram_message(message: str, photo_path=None):
-    """텔레그램 알림 전송"""
+    """텔레그램 메시지 및 스크린샷 전송"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
+    
+    # 1. 텍스트 메시지 전송
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=10)
-        if photo_path and os.path.exists(photo_path):
-            photo_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-            with open(photo_path, 'rb') as photo:
-                requests.post(photo_url, data={'chat_id': TELEGRAM_CHAT_ID}, files={'photo': photo}, timeout=20)
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
+    try: requests.post(url, data=payload, timeout=10)
     except: pass
 
+    # 2. 스크린샷이 있으면 전송 (시각적 확인용)
+    if photo_path and os.path.exists(photo_path):
+        photo_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+        try:
+            with open(photo_path, 'rb') as photo:
+                requests.post(photo_url, data={'chat_id': TELEGRAM_CHAT_ID}, files={'photo': photo}, timeout=20)
+        except: pass
+
 def run_lotto_purchase():
+    """실제 로또 구매 메인 로직"""
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    
-    # 기본 봇 차단 우회만 유지
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     chrome_options.add_argument(f"user-agent={user_agent}")
 
+    driver = webdriver.Chrome(options=chrome_options)
+    driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": user_agent, "platform": "Win32"})
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"})
+    
+    wait = WebDriverWait(driver, 30)
+    
     try:
-        # 드라이버 버전 이슈 해결을 위한 Service 설정만 유지
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        wait = WebDriverWait(driver, 30)
-
-        # 1. 로그인 (가장 단순한 직접 접속)
+        # 1. 로그인
         driver.get("https://dhlottery.co.kr/login")
-        time.sleep(2)
-        wait.until(EC.presence_of_element_located((By.ID, "inpUserId"))).send_keys(ID)
-        driver.find_element(By.ID, "inpUserPswdEncn").send_keys(PASSWORD)
-        driver.find_element(By.ID, "btnLogin").click()
-        time.sleep(3)
+        wait.until(EC.visibility_of_element_located((By.ID, "inpUserId"))).send_keys(id)
+        driver.find_element(By.ID, "inpUserPswdEncn").send_keys(password)
+        driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnLogin"))
+        time.sleep(5)
 
         # 2. 구매 페이지 이동
         driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
-        time.sleep(5)
+        time.sleep(7)
 
-        # 3. Iframe 전환 (기존 방식)
-        wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "ifrm_answer")))
-
-        # 4. 자동번호발급 및 구매 로직 (기본 ID 사용)
-        # 자동번호발급
+        # 3. Iframe 전환
+        iframes = driver.find_elements(By.TAG_NAME, "iframe")
+        if len(iframes) > 0:
+            driver.switch_to.frame(iframes[0])
+        
+        # 4. 자동번호발급 및 수량 선택
         wait.until(EC.element_to_be_clickable((By.ID, "num2"))).click()
-        
-        # 수량 선택
-        amount_sel = Select(driver.find_element(By.ID, "amoundApply"))
-        amount_sel.select_by_value(str(NUMBER))
-        
-        # 확인 버튼
+        Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply")))).select_by_value(str(number))
         driver.find_element(By.ID, "btnSelectNum").click()
         time.sleep(1)
         
-        # 구매하기
+        # 5. 구매하기
         driver.find_element(By.ID, "btnBuy").click()
-        time.sleep(1)
-
-        # 5. 최종 확인 팝업 (가장 단순한 XPath)
-        confirm_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@value='확인']")))
-        confirm_btn.click()
         
-        time.sleep(3)
+        # 6. 최종 확인 팝업
+        final_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
+        wait.until(EC.element_to_be_clickable((By.XPATH, final_xpath))).click()
+        
+        # 7. 성공 스크린샷 저장
+        time.sleep(2)
         driver.save_screenshot("lotto_result.png")
-        return True, "✅ 로또 자동 구매 시도 완료!"
-
+        
+        # 잔액 정보를 가져오는 로직 (사용자가 구현한 기능에 맞춰 추가 가능)
+        # balance = driver.find_element(By.ID, "현재잔액ID").text 
+        
+        return True, "✅ 로또 자동 구매 성공!"
+        
     except Exception as e:
-        if 'driver' in locals():
-            driver.save_screenshot("lotto_error.png")
-        return False, f"❌ 에러 발생: {str(e)}"
+        driver.save_screenshot("lotto_error.png")
+        return False, f"❌ 구매 중 오류 발생: {str(e)}"
     finally:
-        if 'driver' in locals():
-            driver.quit()
+        driver.quit()
 
+# --- 메인 실행부 (재시도 로직 포함) ---
 if __name__ == "__main__":
-    success, message = run_lotto_purchase()
-    photo = "lotto_result.png" if success else "lotto_error.png"
-    send_telegram_message(message, photo)
+    MAX_RETRIES = 3
+    attempt = 1
+    success = False
+    
+    while attempt <= MAX_RETRIES:
+        print(f"[{attempt}/{MAX_RETRIES}] 로또 구매 시도 중...")
+        success, message = run_lotto_purchase()
+        
+        if success:
+            send_telegram_message(message, "lotto_result.png")
+            break
+        else:
+            print(f"시도 실패: {message}")
+            if attempt == MAX_RETRIES:
+                send_telegram_message(f"🚨 최종 실패 알림\n{message}", "lotto_error.png")
+            else:
+                time.sleep(60) # 1분 후 재시도
+        attempt += 1
