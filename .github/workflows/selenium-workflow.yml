@@ -1,10 +1,9 @@
 name: Lotto Auto Purchase
 
 on:
-  workflow_dispatch: # 수동으로 실행
+  workflow_dispatch: # 수동 실행 버튼 생성
   schedule:
-    # 매주 월요일 KST 07:50 (UTC 22:50)에 실행됨
-    # 0 (일요일) 22시 50분은 한국 시간 월요일 07시 50분입니다. (UTC +9)
+    # 매주 월요일 KST 07:50 (UTC 22:50) 실행
     - cron: '50 22 * * 0' 
     
 jobs:
@@ -13,38 +12,36 @@ jobs:
 
     steps:
     - name: Checkout code
-      # 최신 v4 버전 사용
       uses: actions/checkout@v4
 
     - name: Set up Python
-      # 최신 v5 버전 사용
       uses: actions/setup-python@v5
       with:
-        python-version: '3.x'
+        python-version: '3.10' # 버전을 3.10 정도로 명시하면 더 안정적입니다.
 
     - name: Install dependencies (Python & System)
       run: |
         python -m pip install --upgrade pip
-        # 🚨 중요 수정: requests 라이브러리 추가
-        pip install selenium requests
-        pip install webdriver-manager selenium
+        # 필요한 라이브러리 한 번에 설치
+        pip install selenium requests webdriver-manager
         
-        # Chrome/Selenium 실행 및 한글 폰트 지원을 위한 패키지 설치
+        # Chrome 실행 및 한글 스크린샷을 위한 필수 패키지 설치
         sudo apt-get update
         sudo apt-get install -y libglib2.0-0 libnss3 libfontconfig1 libxss1 \
-                               fonts-nanum fonts-nanum-coding fonts-nanum-eco # ✅ 한글 폰트 추가
+                               fonts-nanum fonts-nanum-coding fonts-nanum-eco
         
-        # 시스템 폰트 캐시 갱신
+        # 폰트 캐시 갱신 (한글 깨짐 방지)
         sudo fc-cache -fv
         
     - name: Install Google Chrome Stable
       run: |
-        # Google Chrome 다운로드 및 설치
-        wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-        sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
+        # 최신 안정판 크롬 설치 (기본 설치된 크롬과 버전 충돌 방지)
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+        sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
         
     - name: Run Selenium Script
-      # 🚨 중요 수정: 텔레그램 환경 변수 추가
       env: 
         LOTTO_ID: ${{ secrets.LOTTO_ID }}
         LOTTO_PASSWORD: ${{ secrets.LOTTO_PASSWORD }}
