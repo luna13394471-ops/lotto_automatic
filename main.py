@@ -10,6 +10,7 @@ from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import UnexpectedAlertPresentException, TimeoutException
 
 # ⭐ 환경 변수 설정
 id = os.environ.get("LOTTO_ID")
@@ -35,88 +36,97 @@ def send_telegram_message(message: str, photo_path=None):
 
 def run_lotto_purchase():
     chrome_options = Options()
-    chrome_options.add_argument("--headless=new") # 최신 헤드리스 모드 사용
+    chrome_options.add_argument("--headless=new") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    
-    # --- [렌더러 타임아웃 해결을 위한 끝판왕 옵션] ---
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-features=VizDisplayCompositor") # 렌더링 가속 기능 강제 종료
-    chrome_options.add_argument("--disable-renderer-backgrounding") # 렌더러 백그라운드 처리 방지
-    chrome_options.add_argument("--force-device-scale-factor=1") # 화면 배율 고정
-    chrome_options.page_load_strategy = 'none' # 페이지가 다 로드되지 않아도 즉시 제어권 획득
-    # --------------------------------------------
-    
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    chrome_options.add_argument(f"user-agent={user_agent}")
 
     driver = None
     try:
-        log("0. 드라이버 최신 버전 강제 매칭 중...")
-        # 146 버전에 맞는 드라이버를 경로와 함께 명시적으로 지정
-        driver_path = ChromeDriverManager().install()
-        service = Service(executable_path=driver_path)
+        log("0. 드라이버 최신화 및 실행")
+        service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
+        wait = WebDriverWait(driver, 30) # 대기 시간을 넉넉히 30초로 설정
         
-        # 렌더러 타임아웃을 방지하기 위해 대기 시간을 넉넉히 설정
-        wait = WebDriverWait(driver, 30)
-        
-        log("1. 로그인 페이지 접속...")
+        # 1. 로그인
+        log("1. 로그인 시도 중...")
         driver.get("https://dhlottery.co.kr/login")
-        time.sleep(5) # page_load_strategy='none'이므로 수동 대기 추가
-
-        log("2. 로그인 정보 입력...")
         wait.until(EC.presence_of_element_located((By.ID, "inpUserId"))).send_keys(id)
         driver.find_element(By.ID, "inpUserPswdEncn").send_keys(password)
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnLogin"))
+        time.sleep(3)
+
+        # 2. 구매 페이지 이동
+        log("2. 구매 페이지로 이동...")
+        driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
         time.sleep(5)
 
-        log("3. 구매 페이지 이동...")
-        driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
-        time.sleep(7)
-
-        log("4. Iframe 전환...")
-        # Iframe이 존재할 때까지 기다린 후 전환
-        wait.until(EC.frame_to_be_available_and_switch_to_it((By.TAG_NAME, "iframe")))
+        # 3. Iframe 전환 (안전한 방식)
+        log("3. 구매 Iframe 접속 중...")
+        wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "ifrm_answer")))
         
-        log("5. 자동 번호 선택 및 구매...")
-        # 자동선택 버튼 (ID가 나타날 때까지 대기)
-        wait.until(EC.element_to_be_clickable((By.ID, "num2"))).click()
+        # 4. 자동번호발급 및 수량 선택
+        log("4. 번호 선택 로직 실행...")
+        # '자동번호발급' 라디오 버튼 클릭
+        auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
+        driver.execute_script("arguments[0].click();", auto_btn)
         
         # 수량 1개 선택
-        amt_select = Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply"))))
-        amt_select.select_by_value("1")
+        select_amt = Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply"))))
+        select_amt.select_by_value("1")
         
-        # 번호선택 완료 버튼
-        driver.find_element(By.ID, "btnSelectNum").click()
+        # '번호선택' 버튼 클릭
+        driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnSelectNum"))
         time.sleep(1)
         
-        # 구매하기 버튼
-        driver.find_element(By.ID, "btnBuy").click()
+        # 5. 구매하기 클릭
+        log("5. 구매 버튼 클릭...")
+        driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnBuy"))
         
-        log("6. 최종 확인 팝업 승인...")
-        # 확인 버튼이 나타날 때까지 대기 후 클릭
-        confirm_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@value='확인']")))
-        confirm_btn.click()
-        
-        log("7. 성공 결과 대기 및 스크린샷...")
-        # 결과 창(pop_content)이 뜰 때까지 최대 10초 대기
+        # 6. 최종 확인 팝업 (Layer 팝업 처리)
+        log("6. 최종 승인 팝업 처리...")
         try:
-            wait.until(EC.visibility_of_element_located((By.ID, "pop_content")))
-            time.sleep(2) # 결과 창 애니메이션 대기
+            # 브라우저 알림창(Alert)이 뜰 경우 자동 수락 (예: 이미 구매함 등)
+            WebDriverWait(driver, 3).until(EC.alert_is_present())
+            alert = driver.switch_to.alert
+            alert_text = alert.text
+            alert.accept()
+            log(f"   - 알림창 감지 및 닫기: {alert_text}")
         except:
-            log("결과 창을 찾을 수 없어 현재 화면을 찍습니다.")
+            pass
+            
+        # 실제 '확인' 버튼 클릭
+        final_ok = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@value='확인']")))
+        driver.execute_script("arguments[0].click();", final_ok)
+        
+        # 7. 성공 스크린샷 (수정된 핵심 로직)
+        log("7. 구매 결과 확인 및 성공 캡처...")
+        try:
+            # 구매 결과 레이어(pop_content)가 나타날 때까지 대기
+            wait.until(EC.visibility_of_element_located((By.ID, "pop_content")))
+            time.sleep(2) # 애니메이션 안정화
+            log("   - 성공 화면 감지 완료")
+        except TimeoutException:
+            log("   - 성공 팝업 대기 중 타임아웃 (이미지 우선 저장)")
             
         driver.save_screenshot("lotto_result.png")
-        log("🎉 모든 과정 성공!")
         return True, "✅ 로또 자동 구매 성공!"
-
+        
+    except UnexpectedAlertPresentException as e:
+        log(f"🚨 예상치 못한 알림창 발생: {e.alert_text}")
+        driver.save_screenshot("lotto_error.png")
+        return False, f"차단 알림: {e.alert_text}"
     except Exception as e:
-        log(f"❌ 에러 발생: {str(e)}")
+        log(f"❌ 오류 발생: {str(e)}")
         if driver:
             driver.save_screenshot("lotto_error.png")
-        return False, f"실행 오류: {str(e)}"
+        return False, f"오류: {str(e)}"
     finally:
         if driver:
             driver.quit()
@@ -124,7 +134,7 @@ def run_lotto_purchase():
 if __name__ == "__main__":
     MAX_RETRIES = 2
     for attempt in range(1, MAX_RETRIES + 1):
-        log(f"==== 시도 {attempt}/{MAX_RETRIES} ====")
+        log(f"==== [{attempt}/{MAX_RETRIES}] 로또 구매 시도 ====")
         success, message = run_lotto_purchase()
         if success:
             send_telegram_message(message, "lotto_result.png")
