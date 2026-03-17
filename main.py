@@ -1,16 +1,13 @@
 import os
 import time
 import requests
-import random
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
-# 버전 불일치 해결을 위한 추가 임포트
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 # ⭐ 환경 변수 설정
 id = os.environ.get("LOTTO_ID")
@@ -21,16 +18,12 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 number = 1 
 
 def send_telegram_message(message: str, photo_path=None):
-    """텔레그램 메시지 및 스크린샷 전송"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
-    
-    # 1. 텍스트 메시지 전송
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     try: requests.post(url, data=payload, timeout=10)
     except: pass
 
-    # 2. 스크린샷이 있으면 전송 (시각적 확인용)
     if photo_path and os.path.exists(photo_path):
         photo_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         try:
@@ -39,7 +32,6 @@ def send_telegram_message(message: str, photo_path=None):
         except: pass
 
 def run_lotto_purchase():
-    """실제 로또 구매 메인 로직"""
     chrome_options = Options()
     chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
@@ -51,80 +43,78 @@ def run_lotto_purchase():
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     chrome_options.add_argument(f"user-agent={user_agent}")
 
-    # ChromeDriver 버전을 자동으로 관리하도록 수정된 부분
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    
-    driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": user_agent, "platform": "Win32"})
-    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"})
-    
-    wait = WebDriverWait(driver, 30)
+    # Selenium 4.6+ 내장 매니저 사용 (자동으로 최적 드라이버 매칭)
+    driver = webdriver.Chrome(options=chrome_options)
+    wait = WebDriverWait(driver, 20) # 대기 시간을 20초로 약간 조정
     
     try:
-        # 1. 로그인
+        print("1. 로그인 페이지 접속 중...")
         driver.get("https://dhlottery.co.kr/login")
+        
+        print("2. 아이디/비밀번호 입력 중...")
         wait.until(EC.visibility_of_element_located((By.ID, "inpUserId"))).send_keys(id)
         driver.find_element(By.ID, "inpUserPswdEncn").send_keys(password)
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnLogin"))
+        time.sleep(3)
+
+        print("3. 구매 페이지 이동 중...")
+        driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
         time.sleep(5)
 
-        # 2. 구매 페이지 이동
-        driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
-        time.sleep(7)
-
-        # 3. Iframe 전환
+        print("4. Iframe 전환 시도...")
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
         if len(iframes) > 0:
             driver.switch_to.frame(iframes[0])
+            print("   - Iframe 전환 완료")
         
-        # 4. 자동번호발급 및 수량 선택
+        print("5. 자동 번호 및 수량 선택 중...")
         wait.until(EC.element_to_be_clickable((By.ID, "num2"))).click()
         Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply")))).select_by_value(str(number))
         driver.find_element(By.ID, "btnSelectNum").click()
-        time.sleep(1)
         
-        # 5. 구매하기
+        print("6. 구매 버튼 클릭...")
         driver.find_element(By.ID, "btnBuy").click()
         
-        # 6. 최종 확인 팝업
+        print("7. 최종 확인 팝업 승인 중...")
         final_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
         wait.until(EC.element_to_be_clickable((By.XPATH, final_xpath))).click()
         
-        # 7. 성공 스크린샷 저장 (수정된 로직)
+        print("8. 구매 결과 확인 및 스크린샷 저장 중...")
         try:
-            # 구매 완료 레이어(pop_content)가 뜰 때까지 대기
+            # 결과 팝업이 나타날 때까지 대기
             wait.until(EC.visibility_of_element_located((By.ID, "pop_content")))
-            time.sleep(1) # 화면 안정화 대기
+            time.sleep(1)
         except:
-            time.sleep(3) # 요소를 찾지 못할 경우 기본 대기
+            print("   - 결과 팝업 대기 타임아웃 (강제 진행)")
             
         driver.save_screenshot("lotto_result.png")
+        print("9. 모든 프로세스 완료!")
         
         return True, "✅ 로또 자동 구매 성공!"
         
     except Exception as e:
+        print(f"❗ 오류 발생 위치 확인: {str(e)}")
         driver.save_screenshot("lotto_error.png")
         return False, f"❌ 구매 중 오류 발생: {str(e)}"
     finally:
         driver.quit()
 
-# --- 메인 실행부 (재시도 로직 포함) ---
 if __name__ == "__main__":
     MAX_RETRIES = 3
     attempt = 1
-    success = False
     
     while attempt <= MAX_RETRIES:
-        print(f"[{attempt}/{MAX_RETRIES}] 로또 구매 시도 중...")
+        print(f"\n==== [{attempt}/{MAX_RETRIES}] 구매 시도 시작 ====")
         success, message = run_lotto_purchase()
         
         if success:
             send_telegram_message(message, "lotto_result.png")
             break
         else:
-            print(f"시도 실패: {message}")
+            print(f"   - 시도 실패: {message}")
             if attempt == MAX_RETRIES:
-                send_telegram_message(f"🚨 최종 실패 알림\n{message}", "lotto_error.png")
+                send_telegram_message(f"🚨 최종 실패\n{message}", "lotto_error.png")
             else:
-                time.sleep(60) # 1분 후 재시도
+                print("   - 10초 후 재시도합니다...")
+                time.sleep(10) # 재시도 간격 단축
         attempt += 1
