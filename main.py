@@ -10,7 +10,7 @@ from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, UnexpectedAlertPresentException
 
 # ⭐ 환경 변수 설정
 id = os.environ.get("LOTTO_ID")
@@ -42,10 +42,10 @@ def get_driver():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # [핵심] 렌더러 통신 지연 방지
+    # [핵심] 렌더러 통신 지연 및 메모리 부족 방지
     chrome_options.add_argument("--disable-renderer-backgrounding")
-    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-    chrome_options.page_load_strategy = 'eager' # DOM 구성만 끝나면 즉시 제어 (이미지 로드 안 기다림)
+    chrome_options.add_argument("--js-flags='--max-old-space-size=512'") # 자바스크립트 메모리 제한
+    chrome_options.page_load_strategy = 'eager' # DOM 구성만 끝나면 즉시 제어
     
     # 모바일 리다이렉트 방지 및 자동화 우회
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -55,14 +55,14 @@ def get_driver():
 
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
-    driver.set_page_load_timeout(40) # 로드 타임아웃 확장
+    driver.set_page_load_timeout(40) 
     return driver
 
 def run_lotto_purchase():
     driver = None
     try:
         driver = get_driver()
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 25)
         
         # 1. 로그인
         log("1. 로그인 페이지 접속")
@@ -80,7 +80,6 @@ def run_lotto_purchase():
 
         # 3. Iframe 전환
         log("3. 구매 Iframe 전환")
-        # Iframe이 존재할 때까지 대기 후 전환
         wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "ifrm_answer")))
         
         # 4. 번호 선택 처리
@@ -101,10 +100,11 @@ def run_lotto_purchase():
         
         # 6. 확인 팝업 승인
         log("6. 승인 팝업 처리")
-        # 브라우저 알림(Alert)이 뜰 경우 수락
         try:
-            WebDriverWait(driver, 3).until(EC.alert_is_present())
-            driver.switch_to.alert.accept()
+            WebDriverWait(driver, 5).until(EC.alert_is_present())
+            alert = driver.switch_to.alert
+            log(f"   - 알림 감지: {alert.text}")
+            alert.accept()
         except: pass
 
         # 레이어 팝업의 '확인' 버튼 클릭
@@ -113,24 +113,27 @@ def run_lotto_purchase():
             driver.execute_script("arguments[0].click();", confirm_btn)
         except: pass
 
-        # 7. 구매성공 결과 확인 (가장 중요한 부분)
+        # 7. 구매성공 결과 확인 및 캡처 (수정 요청 반영)
         log("7. 구매 성공 결과 대기 및 캡처")
         try:
-            # 구매 결과 레이어(pop_content)가 눈에 보일 때까지 대기
+            # 성공 팝업(pop_content)이 나타날 때까지 명시적 대기
             wait.until(EC.visibility_of_element_located((By.ID, "pop_content")))
-            time.sleep(2) # 결과 창이 완전히 그려지도록 잠시 대기
-            log("   - 구매 결과 창 확인 완료")
+            time.sleep(2) 
+            log("   - 성공 화면 확인 완료")
         except TimeoutException:
-            log("   - 결과 창 대기 시간 초과 (현재 화면 캡처)")
+            log("   - 결과 창 대기 초과 (현재 화면 캡처 진행)")
 
         driver.save_screenshot("lotto_result.png")
-        log("🎉 모든 프로세스 완료!")
+        log("🎉 모든 과정 성공!")
         return True, "✅ 로또 자동 구매 성공!"
 
+    except UnexpectedAlertPresentException as e:
+        log(f"🚨 예기치 않은 알림 발생: {e.msg}")
+        if driver: driver.save_screenshot("lotto_error.png")
+        return False, f"알림 발생: {e.msg}"
     except Exception as e:
         log(f"❌ 오류 발생: {str(e)}")
-        if driver:
-            driver.save_screenshot("lotto_error.png")
+        if driver: driver.save_screenshot("lotto_error.png")
         return False, f"실행 오류: {str(e)}"
     finally:
         if driver: driver.quit()
