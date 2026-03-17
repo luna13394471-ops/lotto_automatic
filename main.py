@@ -11,7 +11,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-# ⭐ 환경 변수
+# ⭐ 환경 변수 설정
 ID = os.environ.get("LOTTO_ID")
 PASSWORD = os.environ.get("LOTTO_PASSWORD")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -31,97 +31,91 @@ def send_telegram_message(message: str, photo_path=None):
 
 def run_lotto_purchase():
     chrome_options = Options()
-    
-    # 🚨 안정성을 위해 로드 전략을 다시 normal로 설정 (스크립트 꼬임 방지)
-    chrome_options.page_load_strategy = 'normal'
-    
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-gpu")
     
-    # 봇 감지 우회
+    # [추가] 렌더링 안정성 강화 옵션
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--force-device-scale-factor=1")
+    chrome_options.add_argument("--high-dpi-support=1")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     chrome_options.add_argument(f"user-agent={user_agent}")
 
-    driver = None
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": user_agent, "platform": "Win32"})
         
-        wait = WebDriverWait(driver, 40)
+        wait = WebDriverWait(driver, 30)
 
         # 1. 로그인
         driver.get("https://dhlottery.co.kr/login")
         wait.until(EC.presence_of_element_located((By.ID, "inpUserId"))).send_keys(ID)
         driver.find_element(By.ID, "inpUserPswdEncn").send_keys(PASSWORD)
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnLogin"))
-        
-        # 2. 세션 안착 (반드시 거쳐야 함)
         time.sleep(5)
-        driver.get("https://dhlottery.co.kr/common.do?method=main")
-        time.sleep(3)
 
-        # 3. 구매 페이지 이동
-        print("구매 페이지 진입...")
-        driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
-        time.sleep(10) # 전체 리소스 로딩 대기
+        # 2. 로또 전용 구매 페이지로 직접 이동 (더 안정적인 URL)
+        print("로또 전용 구매 페이지 접속 중...")
+        driver.get("https://ol.dhlottery.co.kr/olotto/game/game645.do")
+        time.sleep(10)
 
-        # 4. Iframe 전환 (정교하게 찾기)
-        try:
-            # URL에 LO40이 포함된 iframe을 찾음
-            target_frame = wait.until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@src, 'LO40')]")))
-            driver.switch_to.frame(target_frame)
-            print("Iframe 진입 성공.")
-        except:
-            # 실패 시 첫 번째 iframe으로 백업
-            iframes = driver.find_elements(By.TAG_NAME, "iframe")
-            if iframes:
-                driver.switch_to.frame(iframes[0])
-            else:
-                raise Exception("Iframe을 찾을 수 없습니다.")
+        # 3. Iframe 탐색 및 재시도 로직 (핵심)
+        success_frame = False
+        for attempt in range(5):
+            try:
+                print(f"Iframe 탐색 시도 중... ({attempt+1}/5)")
+                # 이 페이지는 보통 Iframe이 없거나 'ifrm_answer'를 사용함
+                iframes = driver.find_elements(By.TAG_NAME, "iframe")
+                if iframes:
+                    driver.switch_to.frame(iframes[0])
+                
+                # 자동번호발급 버튼이 로드되었는지 확인
+                wait.until(EC.presence_of_element_located((By.ID, "num2")))
+                success_frame = True
+                print("구매 엔진 로드 완료.")
+                break
+            except:
+                print("엔진 로드 대기 중...")
+                driver.switch_to.default_content()
+                time.sleep(5)
 
-        # [추가] 팝업 제거 (강력한 버전)
-        driver.execute_script("""
-            var popups = document.querySelectorAll('input[value="확인"], input[value="닫기"]');
-            popups.forEach(p => p.click());
-        """)
-        time.sleep(2)
+        if not success_frame:
+            raise Exception("구매 엔진(Iframe)을 끝내 로드하지 못했습니다.")
 
-        # 5. 구매 로직
-        # 자동번호발급 (num2)
+        # 4. 구매 로직
         auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
         driver.execute_script("arguments[0].click();", auto_btn)
         
-        # 수량 선택
         amount_sel = Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply"))))
         amount_sel.select_by_value(str(NUMBER))
         
-        # 선택 완료
         driver.find_element(By.ID, "btnSelectNum").click()
         time.sleep(1)
         
-        # 구매하기
-        buy_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnBuy")))
-        driver.execute_script("arguments[0].click();", buy_btn)
+        # 구매하기 클릭 전 예치금 부족 Alert 체크
+        driver.find_element(By.ID, "btnBuy").click()
         
-        # 최종 확인 팝업 (XPath)
+        try:
+            alert = WebDriverWait(driver, 3).until(EC.alert_is_present())
+            alert_text = alert.text
+            alert.accept()
+            return False, f"❌ 구매 실패: {alert_text}"
+        except:
+            pass
+
+        # 최종 확인 팝업
         final_confirm_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
         wait.until(EC.element_to_be_clickable((By.XPATH, final_confirm_xpath))).click()
 
-        # 결과 확인
         time.sleep(5)
-        driver.save_screenshot("lotto_final_result.png")
-        
-        if "완료" in driver.page_source or "구매내역" in driver.page_source:
-            return True, "✅ 로또 자동 구매 성공!"
-        else:
-            return False, "구매 결과가 불분명합니다. 예치금을 확인하세요."
+        driver.save_screenshot("lotto_result.png")
+        return True, "✅ 로또 자동 구매 성공!"
 
     except Exception as e:
         if driver: driver.save_screenshot("lotto_error.png")
@@ -131,5 +125,5 @@ def run_lotto_purchase():
 
 if __name__ == "__main__":
     success, message = run_lotto_purchase()
-    photo = "lotto_final_result.png" if success else "lotto_error.png"
+    photo = "lotto_result.png" if success else "lotto_error.png"
     send_telegram_message(message, photo)
