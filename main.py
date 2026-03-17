@@ -8,6 +8,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
+# 버전 불일치 해결을 위한 추가 임포트
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ⭐ 환경 변수 설정
 id = os.environ.get("LOTTO_ID")
@@ -48,7 +51,10 @@ def run_lotto_purchase():
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     chrome_options.add_argument(f"user-agent={user_agent}")
 
-    driver = webdriver.Chrome(options=chrome_options)
+    # ChromeDriver 버전을 자동으로 관리하도록 수정된 부분
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    
     driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": user_agent, "platform": "Win32"})
     driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"})
     
@@ -84,12 +90,15 @@ def run_lotto_purchase():
         final_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
         wait.until(EC.element_to_be_clickable((By.XPATH, final_xpath))).click()
         
-        # 7. 성공 스크린샷 저장
-        time.sleep(2)
+        # 7. 성공 스크린샷 저장 (수정된 로직)
+        try:
+            # 구매 완료 레이어(pop_content)가 뜰 때까지 대기
+            wait.until(EC.visibility_of_element_located((By.ID, "pop_content")))
+            time.sleep(1) # 화면 안정화 대기
+        except:
+            time.sleep(3) # 요소를 찾지 못할 경우 기본 대기
+            
         driver.save_screenshot("lotto_result.png")
-        
-        # 잔액 정보를 가져오는 로직 (사용자가 구현한 기능에 맞춰 추가 가능)
-        # balance = driver.find_element(By.ID, "현재잔액ID").text 
         
         return True, "✅ 로또 자동 구매 성공!"
         
