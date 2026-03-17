@@ -2,6 +2,7 @@ import os
 import time
 import requests
 import random
+import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -17,6 +18,11 @@ PASSWORD = os.environ.get("LOTTO_PASSWORD")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 NUMBER = 1 
+
+def log(msg):
+    """타임스탬프를 포함한 로그 출력"""
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{now}] {msg}")
 
 def send_telegram_message(message: str, photo_path=None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
@@ -35,112 +41,105 @@ def run_lotto_purchase():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
+    
+    # [강화] CI 환경에서 브라우저 멈춤 방지 옵션
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-software-rasterizer")
+    chrome_options.add_argument("--disable-renderer-backgrounding")
+    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+    chrome_options.add_argument("--disable-breakpad") # 크래시 로그 생성 방지
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     
-    # PC 환경을 완벽히 흉내내기 위한 UA 설정
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     chrome_options.add_argument(f"user-agent={user_agent}")
 
+    driver = None
     try:
+        log("ChromeDriver 설치 및 실행 시도...")
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        # 봇 탐지 우회
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        })
+        # 브라우저 응답 타임아웃 설정
+        driver.set_page_load_timeout(40)
         
-        wait = WebDriverWait(driver, 30)
-
-        # 1. 로그인 (메인 도메인)
-        print(f"로그인 시도 중... (ID: {ID})")
+        log("로그인 페이지 접속 중...")
         driver.get("https://dhlottery.co.kr/login")
+        
+        wait = WebDriverWait(driver, 20)
         wait.until(EC.visibility_of_element_located((By.ID, "inpUserId"))).send_keys(ID)
         driver.find_element(By.ID, "inpUserPswdEncn").send_keys(PASSWORD)
+        
+        log("로그인 버튼 클릭...")
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnLogin"))
         
-        # [중요] 로그인 후 쿠키가 브라우저에 완전히 구워질 때까지 넉넉히 대기
-        time.sleep(10) 
-        print("로그인 세션 안정화 완료.")
+        time.sleep(5)
+        log("세션 안정화 (메인 페이지 경유)...")
+        driver.get("https://dhlottery.co.kr/common.do?method=main")
+        time.sleep(3)
 
-        # 2. 구매 서버로의 안전한 전환 (Referer 유지)
-        print("구매 페이지로 이동 중...")
-        # 직접 이동 대신 자바스크립트로 세션 정보를 물고 이동하도록 유도
+        log("구매 서버 이동 중...")
         driver.execute_script("location.href='https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40'")
-        time.sleep(10) # 게임 서버 세션 동기화 대기
+        time.sleep(7)
 
-        # 3. Iframe 전환 및 '시간 초과' 팝업 적극 대응
+        log("Iframe 탐색 중...")
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
         if len(iframes) > 0:
             driver.switch_to.frame(iframes[0])
-            print("Iframe 진입 성공.")
+            log("Iframe 진입 성공. 팝업 체크...")
             
-            # 스크린샷에 뜬 팝업 처리: '확인' 버튼이 있는지 5초간 수색
-            try:
-                # 팝업의 '확인' 버튼을 찾아 클릭 (ID가 없으므로 텍스트와 클래스로 추적)
-                popup_close_btn = driver.find_elements(By.XPATH, "//input[@value='확인' or @value='닫기']")
-                if popup_close_btn and popup_close_btn[0].is_displayed():
-                    print("세션 만료 팝업 감지! 닫기 버튼 클릭 중...")
-                    driver.execute_script("arguments[0].click();", popup_close_btn[0])
-                    time.sleep(3)
-            except:
-                print("세션 팝업이 발견되지 않았습니다. 계속 진행합니다.")
+            # 세션 만료 팝업 즉시 대응
+            timeout_popups = driver.find_elements(By.XPATH, "//input[@value='확인' or @value='닫기']")
+            if timeout_popups and timeout_popups[0].is_displayed():
+                log("세션 팝업 감지됨. 닫기 시도...")
+                driver.execute_script("arguments[0].click();", timeout_popups[0])
+                time.sleep(2)
         else:
-            raise Exception("구매 Iframe을 찾을 수 없습니다.")
+            raise Exception("Iframe이 없습니다.")
 
-        # 4. 자동번호발급 및 수량 선택
-        # 버튼이 활성화될 때까지 기다림
+        log("자동번호발급 선택...")
         auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
         driver.execute_script("arguments[0].click();", auto_btn)
         
-        # 수량 선택 (amoundApply)
-        amount_sel_el = wait.until(EC.presence_of_element_located((By.ID, "amoundApply")))
-        Select(amount_sel_el).select_by_value(str(NUMBER))
-        
-        # '확인' 버튼 클릭
+        log("수량 선택 및 번호 확인...")
+        Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply")))).select_by_value(str(NUMBER))
         driver.find_element(By.ID, "btnSelectNum").click()
-        print(f"{NUMBER}게임 선택 완료.")
-        time.sleep(2)
         
-        # 5. 구매하기 클릭 및 최종 승인
-        buy_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnBuy")))
-        driver.execute_script("arguments[0].click();", buy_btn)
+        log("구매하기 클릭...")
+        driver.find_element(By.ID, "btnBuy").click()
         
-        # 최종 확인 팝업 버튼 (XPath)
-        final_confirm_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
-        final_confirm_btn = wait.until(EC.element_to_be_clickable((By.XPATH, final_confirm_xpath)))
-        driver.execute_script("arguments[0].click();", final_confirm_btn)
+        # 최종 확인 (Alert 차단 가능성 대비)
+        log("최종 확인 팝업 처리...")
+        final_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
+        wait.until(EC.element_to_be_clickable((By.XPATH, final_xpath))).click()
 
-        # 6. 결과 검증 (성공 메시지 확인)
-        time.sleep(5)
-        if "완료" in driver.page_source or "구매내역" in driver.page_source:
-            driver.save_screenshot("lotto_final_success.png")
-            return True, f"✅ 로또 자동 구매 성공! ({NUMBER}게임)"
-        else:
-            driver.save_screenshot("lotto_result_fail.png")
-            return False, "❌ 구매 후 결과 확인 실패 (예치금 부족 여부 확인 필요)"
+        time.sleep(3)
+        driver.save_screenshot("final_result.png")
+        log("구매 완료!")
+        return True, "✅ 로또 구매 성공!"
 
     except Exception as e:
-        if 'driver' in locals():
-            driver.save_screenshot("session_error_debug.png")
-        return False, f"❌ 에러 발생: {str(e)}"
+        log(f"에러 발생 지점: {driver.current_url if driver else 'N/A'}")
+        log(f"에러 메시지: {str(e)}")
+        if driver:
+            driver.save_screenshot("error_step.png")
+        return False, str(e)
     finally:
-        if 'driver' in locals():
+        if driver:
+            log("브라우저 종료.")
             driver.quit()
 
 if __name__ == "__main__":
-    # 세션 오류 대응을 위해 최대 3번까지 재시도합니다.
-    MAX_RETRIES = 3
-    for i in range(1, MAX_RETRIES + 1):
-        print(f"[{i}/{MAX_RETRIES}] 시도 중...")
+    MAX_RETRIES = 2 # 6분 지연 방지를 위해 재시도 횟수를 줄임
+    for attempt in range(1, MAX_RETRIES + 1):
+        log(f"==== [{attempt}/{MAX_RETRIES}] 차 시도 시작 ====")
         success, message = run_lotto_purchase()
         if success:
-            send_telegram_message(message, "lotto_final_success.png")
+            send_telegram_message(message, "final_result.png")
             break
         else:
-            if i == MAX_RETRIES:
-                send_telegram_message(f"🚨 최종 실패: {message}", "session_error_debug.png")
+            if attempt == MAX_RETRIES:
+                send_telegram_message(f"🚨 최종 실패 알림\n사유: {message}", "error_step.png")
             else:
-                print(f"실패하여 1분 후 다시 시도합니다... ({message})")
-                time.sleep(60)
+                log("30초 후 재시도합니다...")
+                time.sleep(30)
