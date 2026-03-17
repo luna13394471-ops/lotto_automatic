@@ -2,7 +2,6 @@ import os
 import time
 import requests
 import random
-import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -19,11 +18,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 NUMBER = 1 
 
-def log(msg):
-    """타임스탬프를 포함한 로그 출력"""
-    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f"[{now}] {msg}")
-
 def send_telegram_message(message: str, photo_path=None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -37,17 +31,22 @@ def send_telegram_message(message: str, photo_path=None):
 
 def run_lotto_purchase():
     chrome_options = Options()
+    
+    # 🚨 [가장 중요] 페이지 로드 전략을 'eager'로 설정 (이미지/광고 무시하고 HTML만 뜨면 바로 진행)
+    chrome_options.page_load_strategy = 'eager'
+    
+    # 기본 최적화 옵션
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # [강화] CI 환경에서 브라우저 멈춤 방지 옵션
+    # [렌더러 타임아웃 방지 옵션 강화]
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-software-rasterizer")
-    chrome_options.add_argument("--disable-renderer-backgrounding")
-    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-    chrome_options.add_argument("--disable-breakpad") # 크래시 로그 생성 방지
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--proxy-server='direct://'")
+    chrome_options.add_argument("--proxy-bypass-list=*")
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false") # 이미지 로딩 안 함 (속도 향상)
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     
@@ -56,90 +55,75 @@ def run_lotto_purchase():
 
     driver = None
     try:
-        log("ChromeDriver 설치 및 실행 시도...")
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        # 브라우저 응답 타임아웃 설정
-        driver.set_page_load_timeout(40)
+        # 렌더러 응답 대기 시간 설정
+        driver.set_page_load_timeout(30)
         
-        log("로그인 페이지 접속 중...")
-        driver.get("https://dhlottery.co.kr/login")
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
         
         wait = WebDriverWait(driver, 20)
-        wait.until(EC.visibility_of_element_located((By.ID, "inpUserId"))).send_keys(ID)
+
+        # 1. 로그인
+        driver.get("https://dhlottery.co.kr/login")
+        wait.until(EC.presence_of_element_located((By.ID, "inpUserId"))).send_keys(ID)
         driver.find_element(By.ID, "inpUserPswdEncn").send_keys(PASSWORD)
-        
-        log("로그인 버튼 클릭...")
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnLogin"))
         
-        time.sleep(5)
-        log("세션 안정화 (메인 페이지 경유)...")
-        driver.get("https://dhlottery.co.kr/common.do?method=main")
         time.sleep(3)
+        # 세션 안정화를 위해 메인 이동
+        driver.get("https://dhlottery.co.kr/common.do?method=main")
+        time.sleep(2)
 
-        log("구매 서버 이동 중...")
+        # 2. 구매 서버 이동
         driver.execute_script("location.href='https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40'")
-        time.sleep(7)
+        time.sleep(5)
 
-        log("Iframe 탐색 중...")
+        # 3. Iframe 전환
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
         if len(iframes) > 0:
             driver.switch_to.frame(iframes[0])
-            log("Iframe 진입 성공. 팝업 체크...")
             
-            # 세션 만료 팝업 즉시 대응
-            timeout_popups = driver.find_elements(By.XPATH, "//input[@value='확인' or @value='닫기']")
-            if timeout_popups and timeout_popups[0].is_displayed():
-                log("세션 팝업 감지됨. 닫기 시도...")
-                driver.execute_script("arguments[0].click();", timeout_popups[0])
-                time.sleep(2)
+            # 팝업 체크 (간소화)
+            try:
+                popups = driver.find_elements(By.XPATH, "//input[@value='확인']")
+                if popups: driver.execute_script("arguments[0].click();", popups[0])
+            except: pass
         else:
-            raise Exception("Iframe이 없습니다.")
+            raise Exception("Iframe 탐색 실패")
 
-        log("자동번호발급 선택...")
+        # 4. 자동발급 및 구매
+        # eager 모드이므로 버튼이 나타날 때까지 명시적으로 기다려야 함
         auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
         driver.execute_script("arguments[0].click();", auto_btn)
         
-        log("수량 선택 및 번호 확인...")
-        Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply")))).select_by_value(str(NUMBER))
+        amount_sel = Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply"))))
+        amount_sel.select_by_value(str(NUMBER))
+        
         driver.find_element(By.ID, "btnSelectNum").click()
         
-        log("구매하기 클릭...")
-        driver.find_element(By.ID, "btnBuy").click()
+        # 구매하기 및 최종 확인
+        buy_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnBuy")))
+        driver.execute_script("arguments[0].click();", buy_btn)
         
-        # 최종 확인 (Alert 차단 가능성 대비)
-        log("최종 확인 팝업 처리...")
+        # 최종 확인 팝업 (XPath)
         final_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
         wait.until(EC.element_to_be_clickable((By.XPATH, final_xpath))).click()
 
         time.sleep(3)
-        driver.save_screenshot("final_result.png")
-        log("구매 완료!")
-        return True, "✅ 로또 구매 성공!"
+        driver.save_screenshot("success.png")
+        return True, "✅ 로또 자동 구매 성공!"
 
     except Exception as e:
-        log(f"에러 발생 지점: {driver.current_url if driver else 'N/A'}")
-        log(f"에러 메시지: {str(e)}")
-        if driver:
-            driver.save_screenshot("error_step.png")
+        if driver: driver.save_screenshot("error.png")
         return False, str(e)
     finally:
-        if driver:
-            log("브라우저 종료.")
-            driver.quit()
+        if driver: driver.quit()
 
 if __name__ == "__main__":
-    MAX_RETRIES = 2 # 6분 지연 방지를 위해 재시도 횟수를 줄임
-    for attempt in range(1, MAX_RETRIES + 1):
-        log(f"==== [{attempt}/{MAX_RETRIES}] 차 시도 시작 ====")
-        success, message = run_lotto_purchase()
-        if success:
-            send_telegram_message(message, "final_result.png")
-            break
-        else:
-            if attempt == MAX_RETRIES:
-                send_telegram_message(f"🚨 최종 실패 알림\n사유: {message}", "error_step.png")
-            else:
-                log("30초 후 재시도합니다...")
-                time.sleep(30)
+    success, message = run_lotto_purchase()
+    photo = "success.png" if success else "error.png"
+    send_telegram_message(message, photo)
