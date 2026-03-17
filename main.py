@@ -9,8 +9,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-# ⭐ 드라이버 자동 관리를 위한 라이브러리
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import UnexpectedAlertPresentException, NoAlertPresentException
 
 # ⭐ 환경 변수 설정
 ID = os.environ.get("LOTTO_ID")
@@ -21,7 +21,6 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 NUMBER = 1 
 
 def send_telegram_message(message: str, photo_path=None):
-    """텔레그램 알림 및 스크린샷 전송"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
@@ -38,7 +37,7 @@ def run_lotto_purchase():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-gpu") # 스크린샷 깨짐 방지
+    chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     
@@ -46,20 +45,15 @@ def run_lotto_purchase():
     chrome_options.add_argument(f"user-agent={user_agent}")
 
     try:
-        # ⭐ [핵심 수정] ChromeDriver를 현재 크롬 버전에 맞춰 자동 설치 및 실행
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        
-        # 브라우저 제어 타임아웃 설정 (Read timed out 방지)
-        driver.set_page_load_timeout(60)
-        driver.set_script_timeout(60)
         
         driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": user_agent, "platform": "Win32"})
         driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
             "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         })
         
-        wait = WebDriverWait(driver, 40) # 대기 시간 강화
+        wait = WebDriverWait(driver, 30)
         
         # 1. 로그인
         driver.get("https://dhlottery.co.kr/login")
@@ -67,25 +61,22 @@ def run_lotto_purchase():
         driver.find_element(By.ID, "inpUserPswdEncn").send_keys(PASSWORD)
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnLogin"))
         
-        # 세션 안착 대기
         time.sleep(5)
         driver.get("https://dhlottery.co.kr/common.do?method=main")
         time.sleep(3)
 
         # 2. 구매 페이지 이동
         driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
-        print("구매 페이지 로딩 대기 중...")
-        time.sleep(10) # 게임 엔진 로딩을 위해 넉넉히 대기
+        time.sleep(7)
 
         # 3. Iframe 전환
         iframes = driver.find_elements(By.TAG_NAME, "iframe")
         if len(iframes) > 0:
             driver.switch_to.frame(iframes[0])
-            print("Iframe 진입 성공.")
         else:
             raise Exception("구매 Iframe을 찾을 수 없습니다.")
 
-        # 4. 구매 로직 (자동번호발급 -> 수량 -> 확인 -> 구매)
+        # 4. 자동번호발급 및 수량 선택
         auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
         driver.execute_script("arguments[0].click();", auto_btn)
         
@@ -93,36 +84,58 @@ def run_lotto_purchase():
         amount_sel.select_by_value(str(NUMBER))
         
         driver.find_element(By.ID, "btnSelectNum").click()
-        time.sleep(2)
+        time.sleep(1)
         
-        driver.find_element(By.ID, "btnBuy").click()
+        # 5. 구매하기 클릭 및 예치금 체크
+        buy_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnBuy")))
+        driver.execute_script("arguments[0].click();", buy_btn)
         
-        # 최종 확인 팝업 (XPath)
+        # [중요] 예치금 부족 시 나타나는 Alert 체크
+        try:
+            alert = WebDriverWait(driver, 3).until(EC.alert_is_present())
+            alert_text = alert.text
+            alert.accept() # 확인 버튼 클릭
+            if "부족" in alert_text:
+                driver.save_screenshot("insufficient_funds.png")
+                return False, f"❌ 구매 실패 (예치금 부족): {alert_text}"
+        except:
+            pass # Alert이 없으면 정상 진행
+
+        # 6. 최종 확인 팝업
         final_confirm_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
         wait.until(EC.element_to_be_clickable((By.XPATH, final_confirm_xpath))).click()
 
-        time.sleep(3)
-        driver.save_screenshot("lotto_success.png")
-        return True, "✅ 로또 자동 구매 성공!"
+        # [중요] 실제 구매 결과 확인 대기
+        time.sleep(5) # 결과 처리 대기
+        
+        # 결과 화면에 성공 메시지가 있는지 확인 (예: '정상적으로 처리되었습니다')
+        # 보통 구매 후에는 #report 확인 레이어가 뜸
+        try:
+            result_msg = wait.until(EC.presence_of_element_located((By.ID, "pop_receipt"))).text
+            if "구매가 완료되었습니다" in result_msg or "총 결제금액" in result_msg:
+                driver.save_screenshot("success_result.png")
+                return True, f"✅ 로또 자동 구매 성공! ({NUMBER}게임)"
+            else:
+                driver.save_screenshot("unknown_result.png")
+                return False, "❌ 구매 성공 여부 불확실 (결과 메시지 미확인)"
+        except:
+            driver.save_screenshot("result_timeout.png")
+            return False, "❌ 구매 후 결과 화면을 찾을 수 없습니다."
 
     except Exception as e:
         if 'driver' in locals():
-            driver.save_screenshot("lotto_error_capture.png")
+            driver.save_screenshot("error_capture.png")
         return False, f"❌ 에러 발생: {str(e)}"
     finally:
         if 'driver' in locals():
             driver.quit()
 
-# --- 실행부 (재시도 로직) ---
 if __name__ == "__main__":
-    MAX_RETRIES = 2 # 버전 이슈 해결 후이므로 재시도 횟수 조정
-    for attempt in range(1, MAX_RETRIES + 1):
-        success, message = run_lotto_purchase()
-        if success:
-            send_telegram_message(message, "lotto_success.png")
-            break
-        else:
-            if attempt == MAX_RETRIES:
-                send_telegram_message(f"🚨 최종 실패 알림\n사유: {message}", "lotto_error_capture.png")
-            else:
-                time.sleep(30)
+    success, message = run_lotto_purchase()
+    photo = "success_result.png" if success else "error_capture.png"
+    if not os.path.exists(photo):
+        # 실패 상황에 따라 스크린샷 이름이 다를 수 있으므로 체크
+        for f in ["insufficient_funds.png", "unknown_result.png", "result_timeout.png"]:
+            if os.path.exists(f): photo = f; break
+            
+    send_telegram_message(message, photo)
