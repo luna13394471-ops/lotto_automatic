@@ -32,21 +32,16 @@ def send_telegram_message(message: str, photo_path=None):
 def run_lotto_purchase():
     chrome_options = Options()
     
-    # 🚨 [가장 중요] 페이지 로드 전략을 'eager'로 설정 (이미지/광고 무시하고 HTML만 뜨면 바로 진행)
-    chrome_options.page_load_strategy = 'eager'
+    # 🚨 안정성을 위해 로드 전략을 다시 normal로 설정 (스크립트 꼬임 방지)
+    chrome_options.page_load_strategy = 'normal'
     
-    # 기본 최적화 옵션
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
-    
-    # [렌더러 타임아웃 방지 옵션 강화]
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--proxy-server='direct://'")
-    chrome_options.add_argument("--proxy-bypass-list=*")
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false") # 이미지 로딩 안 함 (속도 향상)
+    
+    # 봇 감지 우회
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     
@@ -57,15 +52,9 @@ def run_lotto_purchase():
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": user_agent, "platform": "Win32"})
         
-        # 렌더러 응답 대기 시간 설정
-        driver.set_page_load_timeout(30)
-        
-        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-            "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        })
-        
-        wait = WebDriverWait(driver, 20)
+        wait = WebDriverWait(driver, 40)
 
         # 1. 로그인
         driver.get("https://dhlottery.co.kr/login")
@@ -73,57 +62,74 @@ def run_lotto_purchase():
         driver.find_element(By.ID, "inpUserPswdEncn").send_keys(PASSWORD)
         driver.execute_script("arguments[0].click();", driver.find_element(By.ID, "btnLogin"))
         
-        time.sleep(3)
-        # 세션 안정화를 위해 메인 이동
+        # 2. 세션 안착 (반드시 거쳐야 함)
+        time.sleep(5)
         driver.get("https://dhlottery.co.kr/common.do?method=main")
+        time.sleep(3)
+
+        # 3. 구매 페이지 이동
+        print("구매 페이지 진입...")
+        driver.get("https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40")
+        time.sleep(10) # 전체 리소스 로딩 대기
+
+        # 4. Iframe 전환 (정교하게 찾기)
+        try:
+            # URL에 LO40이 포함된 iframe을 찾음
+            target_frame = wait.until(EC.presence_of_element_located((By.XPATH, "//iframe[contains(@src, 'LO40')]")))
+            driver.switch_to.frame(target_frame)
+            print("Iframe 진입 성공.")
+        except:
+            # 실패 시 첫 번째 iframe으로 백업
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+            if iframes:
+                driver.switch_to.frame(iframes[0])
+            else:
+                raise Exception("Iframe을 찾을 수 없습니다.")
+
+        # [추가] 팝업 제거 (강력한 버전)
+        driver.execute_script("""
+            var popups = document.querySelectorAll('input[value="확인"], input[value="닫기"]');
+            popups.forEach(p => p.click());
+        """)
         time.sleep(2)
 
-        # 2. 구매 서버 이동
-        driver.execute_script("location.href='https://el.dhlottery.co.kr/game/TotalGame.jsp?LottoId=LO40'")
-        time.sleep(5)
-
-        # 3. Iframe 전환
-        iframes = driver.find_elements(By.TAG_NAME, "iframe")
-        if len(iframes) > 0:
-            driver.switch_to.frame(iframes[0])
-            
-            # 팝업 체크 (간소화)
-            try:
-                popups = driver.find_elements(By.XPATH, "//input[@value='확인']")
-                if popups: driver.execute_script("arguments[0].click();", popups[0])
-            except: pass
-        else:
-            raise Exception("Iframe 탐색 실패")
-
-        # 4. 자동발급 및 구매
-        # eager 모드이므로 버튼이 나타날 때까지 명시적으로 기다려야 함
+        # 5. 구매 로직
+        # 자동번호발급 (num2)
         auto_btn = wait.until(EC.element_to_be_clickable((By.ID, "num2")))
         driver.execute_script("arguments[0].click();", auto_btn)
         
+        # 수량 선택
         amount_sel = Select(wait.until(EC.presence_of_element_located((By.ID, "amoundApply"))))
         amount_sel.select_by_value(str(NUMBER))
         
+        # 선택 완료
         driver.find_element(By.ID, "btnSelectNum").click()
+        time.sleep(1)
         
-        # 구매하기 및 최종 확인
+        # 구매하기
         buy_btn = wait.until(EC.element_to_be_clickable((By.ID, "btnBuy")))
         driver.execute_script("arguments[0].click();", buy_btn)
         
         # 최종 확인 팝업 (XPath)
-        final_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
-        wait.until(EC.element_to_be_clickable((By.XPATH, final_xpath))).click()
+        final_confirm_xpath = "//input[@value='확인' and contains(@onclick, 'closepopupLayerConfirm')]"
+        wait.until(EC.element_to_be_clickable((By.XPATH, final_confirm_xpath))).click()
 
-        time.sleep(3)
-        driver.save_screenshot("success.png")
-        return True, "✅ 로또 자동 구매 성공!"
+        # 결과 확인
+        time.sleep(5)
+        driver.save_screenshot("lotto_final_result.png")
+        
+        if "완료" in driver.page_source or "구매내역" in driver.page_source:
+            return True, "✅ 로또 자동 구매 성공!"
+        else:
+            return False, "구매 결과가 불분명합니다. 예치금을 확인하세요."
 
     except Exception as e:
-        if driver: driver.save_screenshot("error.png")
-        return False, str(e)
+        if driver: driver.save_screenshot("lotto_error.png")
+        return False, f"❌ 에러 발생: {str(e)}"
     finally:
         if driver: driver.quit()
 
 if __name__ == "__main__":
     success, message = run_lotto_purchase()
-    photo = "success.png" if success else "error.png"
+    photo = "lotto_final_result.png" if success else "lotto_error.png"
     send_telegram_message(message, photo)
